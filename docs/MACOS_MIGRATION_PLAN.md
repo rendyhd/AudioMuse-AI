@@ -67,7 +67,7 @@ Use `delocate` (Python `auditwheel` equivalent) to fix dylib references for relo
 
 **CRITICAL FINDING: CoreML EP is NOT viable for these models.**
 
-The developer already tested CoreML and documented the results in `student_clap/data/clap_embedder.py:45-66`:
+The developer already tested CoreML and documented the results in `student_clap/data/clap_embedder.py:45-66` (teacher model; the student model used in production likely has similar issues):
 ```
 CoreML is 2x SLOWER than CPU for this model due to poor operator coverage.
 Only 24% of ops supported by CoreML GPU, context switching overhead too high.
@@ -80,15 +80,17 @@ Performance: ~325ms/segment (CPU) vs ~713ms/segment (CoreML)
 - The existing `onnxruntime==1.19.2` CPU build works correctly on macOS arm64
 - No provider selection code changes needed - CPU EP is the default fallback everywhere
 
-**Files that do ONNX provider selection (6 production locations):**
-1. `tasks/clap_analyzer.py:91-106` - `_load_audio_model()` - CUDA check, falls back to CPU
-2. `tasks/clap_analyzer.py:190-207` - `_load_text_model()` - CUDA check, falls back to CPU
-3. `tasks/mulan_analyzer.py:56-82` - `_load_mulan_models()` audio encoder - CUDA check, falls back to CPU
-4. `tasks/mulan_analyzer.py:163-184` - `initialize_mulan_text_models()` - CUDA check, falls back to CPU
-5. `tasks/analysis.py:385-401` - MusiCNN models - CUDA check, falls back to CPU
-6. `student_clap/data/clap_embedder.py:56-72` - Teacher model (training toolkit only, not production)
+**Files that do ONNX provider selection (8 production locations):**
+1. `tasks/clap_analyzer.py:92-103` - `_load_audio_model()` - CUDA check, falls back to CPU
+2. `tasks/clap_analyzer.py:192-203` - `_load_text_model()` - CUDA check, falls back to CPU
+3. `tasks/mulan_analyzer.py:70-71` - `_load_mulan_models()` audio encoder - CUDA check, falls back to CPU
+4. `tasks/mulan_analyzer.py:176-177` - `initialize_mulan_text_models()` - CUDA check, falls back to CPU
+5. `tasks/analysis.py:384-397` - MusiCNN models in `analyze_track` - CUDA check, falls back to CPU
+6. `tasks/analysis.py:814-825` - MusiCNN lazy loading in `analyze_album_task` - CUDA check, falls back to CPU
+7. `tasks/analysis.py:862-873` - MusiCNN session recycling in `analyze_album_task` - CUDA check, falls back to CPU
+8. `student_clap/data/clap_embedder.py:57-58` - Teacher model (training toolkit only, not production)
 
-**All 6 locations already fall back to `CPUExecutionProvider` when CUDA is absent.** No code changes needed for macOS - the existing logic works as-is.
+**All 8 locations already fall back to `CPUExecutionProvider` when CUDA is absent.** No code changes needed for macOS - the existing logic works as-is.
 
 **`tasks/memory_utils.py`:** CUDA cleanup (`torch.cuda.empty_cache()`, `cupy` pool cleanup) is wrapped in `try/except ImportError` - already gracefully handles non-CUDA systems. No changes needed.
 
@@ -168,13 +170,20 @@ Downloaded on first launch, cached permanently:
     janitor.log
 ```
 
-### Config Migration (Zero Changes to config.py)
+### Config Migration
 
-`config.py` reads everything from `os.environ`. On macOS:
+`config.py` reads most values from `os.environ`, with one exception requiring a fix.
+
+**Required change in `config.py:54`:** `TEMP_DIR` is hardcoded as `/app/temp_audio` and does NOT read from `os.environ`. This must be changed to:
+```python
+TEMP_DIR = os.environ.get("TEMP_DIR", "/app/temp_audio")
+```
+This is the **only modification needed** in the existing codebase. Without it, the macOS app will fail with permission errors trying to write to `/app/temp_audio`.
+
+**macOS config flow:**
 1. New `macos/config_macos.py` reads `config.env` from Application Support
 2. Sets all env vars before the Python process imports `config.py`
-3. Overrides: `TEMP_DIR`, model paths -> Application Support, `POSTGRES_HOST=127.0.0.1`, `REDIS_URL=redis://127.0.0.1:6379/0`
-4. `config.py` itself needs **zero modifications**
+3. Overrides: `TEMP_DIR` -> `~/Library/Application Support/AudioMuse-AI/temp_audio`, model paths -> Application Support, `POSTGRES_HOST=127.0.0.1`, `REDIS_URL=redis://127.0.0.1:6379/0`
 
 ---
 
@@ -215,11 +224,14 @@ macos/
   README.md                     # macOS-specific build instructions
 ```
 
-**Files to modify in existing codebase: NONE.** All existing Python code works as-is because:
-- ONNX provider selection already falls back to CPU when CUDA absent
-- `memory_utils.py` already handles missing torch/cupy gracefully
-- `config.py` reads from `os.environ` (set by `config_macos.py` before import)
-- Workers detect `AUDIOMUSE_ROLE=worker` from env (set by Tauri sidecar)
+**Files to modify in existing codebase: ONE.**
+- `config.py:54` - Change `TEMP_DIR = "/app/temp_audio"` to `TEMP_DIR = os.environ.get("TEMP_DIR", "/app/temp_audio")` (hardcoded path, does not read from env)
+
+All other existing Python code works as-is because:
+- ONNX provider selection already falls back to CPU when CUDA absent (all 8 locations)
+- `memory_utils.py` already handles missing torch/cupy gracefully (`try/except ImportError`)
+- All other `config.py` values read from `os.environ` (set by `config_macos.py` before import)
+- Workers detect `AUDIOMUSE_ROLE=worker` from env (set by Tauri sidecar, same as `rq_worker.py:13`)
 
 ---
 
