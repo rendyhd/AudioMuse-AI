@@ -58,17 +58,10 @@ else
         echo "ICU libraries bundled from $ICU_PREFIX"
     fi
 
-    # Copy extension modules (pg_trgm, unaccent are in contrib, always included)
-    if [ -d "$PG_PREFIX/share/postgresql@15/extension" ]; then
-        mkdir -p "$PG_DIR/share/extension"
-        cp "$PG_PREFIX/share/postgresql@15/extension/"* "$PG_DIR/share/extension/"
-    fi
-
-    # Copy timezone and locale data
+    # Copy all share data (postgres.bki, extensions, timezone, SQL files, etc.)
     if [ -d "$PG_PREFIX/share/postgresql@15" ]; then
         mkdir -p "$PG_DIR/share"
-        cp -R "$PG_PREFIX/share/postgresql@15/timezonesets" "$PG_DIR/share/" 2>/dev/null || true
-        cp -R "$PG_PREFIX/share/postgresql@15/timezone" "$PG_DIR/share/" 2>/dev/null || true
+        cp -R "$PG_PREFIX/share/postgresql@15/"* "$PG_DIR/share/"
     fi
 
     echo "PostgreSQL binaries bundled to $PG_DIR"

@@ -201,6 +201,7 @@ impl SidecarManager {
         std::fs::create_dir_all(&pg_data).map_err(|e| format!("Failed to create PG data dir: {}", e))?;
 
         let initdb = self.resource_bin("postgres/bin/initdb");
+        let pg_share = self.resource_bin("postgres/share");
         let output = Command::new(&initdb)
             .args([
                 "-D",
@@ -209,6 +210,8 @@ impl SidecarManager {
                 "audiomuse",
                 "--encoding=UTF8",
                 "--locale=C",
+                "-L",
+                &pg_share.to_string_lossy(),
             ])
             .env("LC_ALL", "C")
             .env("LC_CTYPE", "C")
