@@ -2021,6 +2021,25 @@ def get_server_info():
     })
 
 
+@setup_bp.route('/api/setup/pick-folder', methods=['GET'])
+def pick_folder():
+    """Open native macOS folder picker dialog."""
+    import platform, subprocess
+    if platform.system() != 'Darwin':
+        return jsonify({'error': 'Native folder picker only available on macOS'}), 400
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', 'POSIX path of (choose folder with prompt "Select Directory")'],
+            capture_output=True, text=True, timeout=120
+        )
+        if result.returncode != 0:
+            return jsonify({'path': ''})  # User cancelled
+        selected = result.stdout.strip().rstrip('/')
+        return jsonify({'path': selected})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @setup_bp.route('/api/setup/browse-directories', methods=['GET'])
 def browse_directories():
     """
@@ -2047,8 +2066,15 @@ def browse_directories():
     if '..' in requested_path:
         return jsonify({'error': 'Invalid path'}), 400
 
-    # Restrict browsing to safe root directories only (Docker/Linux mount points)
-    ALLOWED_ROOTS = ['/music', '/data', '/media', '/mnt', '/home', '/srv', '/opt', '/nas']
+    # Restrict browsing to safe root directories
+    import platform
+    if platform.system() == 'Darwin':
+        # macOS: allow user home, common mount points, and Volumes
+        home = os.path.expanduser('~')
+        ALLOWED_ROOTS = [home, '/Volumes', '/Users', '/music', '/data', '/media']
+    else:
+        # Docker/Linux mount points
+        ALLOWED_ROOTS = ['/music', '/data', '/media', '/mnt', '/home', '/srv', '/opt', '/nas']
 
     if requested_path:
         real_requested = os.path.realpath(requested_path)

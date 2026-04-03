@@ -58,25 +58,24 @@ echo ""
 echo ">>> Installing AudioMuse-AI dependencies..."
 
 PYTHON="$PYTHON_DIR/bin/python3"
-PIP="$PYTHON -m pip"
 
 # Upgrade pip first
-$PIP install --upgrade pip setuptools wheel
+"$PYTHON" -m pip install --upgrade pip setuptools wheel
 
 # Install from requirements/common.txt (shared between CPU and GPU)
-$PIP install -r "$PROJECT_ROOT/requirements/common.txt"
+"$PYTHON" -m pip install -r "$PROJECT_ROOT/requirements/common.txt"
 
 # Install CPU-specific ONNX Runtime (not GPU)
 if [ -f "$PROJECT_ROOT/requirements/cpu.txt" ]; then
-    $PIP install -r "$PROJECT_ROOT/requirements/cpu.txt"
+    "$PYTHON" -m pip install -r "$PROJECT_ROOT/requirements/cpu.txt"
 else
-    $PIP install onnxruntime==1.19.2
+    "$PYTHON" -m pip install onnxruntime==1.19.2
 fi
 
 echo ""
 echo ">>> Verifying critical imports..."
 
-$PYTHON -c "
+"$PYTHON" -c "
 imports = [
     'flask', 'redis', 'psycopg2', 'librosa', 'onnxruntime',
     'voyager', 'sklearn', 'numba', 'transformers', 'sentencepiece',
@@ -100,13 +99,13 @@ print('\nAll critical imports verified successfully.')
 
 echo ""
 echo ">>> Installing delocate for dylib fixup..."
-$PIP install delocate
+"$PYTHON" -m pip install delocate
 
 echo ">>> Running delocate on installed packages..."
-SITE_PACKAGES="$($PYTHON -c 'import site; print(site.getsitepackages()[0])')"
+SITE_PACKAGES="$("$PYTHON" -c 'import site; print(site.getsitepackages()[0])')"
 
 # delocate-path fixes all .dylib and .so files in the given directory tree
-$PYTHON -m delocate.cmd.delocate_path "$SITE_PACKAGES" || {
+"$PYTHON" -m delocate.cmd.delocate_path "$SITE_PACKAGES" || {
     echo "WARNING: delocate reported issues (non-fatal, some system libs may remain as @rpath)"
 }
 
@@ -131,4 +130,4 @@ echo ""
 echo "=== Python environment built successfully ==="
 echo "Location: ${PYTHON_DIR}"
 echo "Size: ${PYTHON_SIZE}"
-echo "Python: $("$PYTHON" --version)"
+echo "Python: $("$PYTHON" --version 2>&1)"

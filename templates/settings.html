@@ -884,6 +884,25 @@
     </div>
 </div>
 
+<!-- Directory Browser Modal -->
+<div class="modal-overlay" id="directory-browser-modal" style="display:none;">
+    <div class="modal" style="max-width:600px;">
+        <div class="modal-header">
+            <h3>Browse Directories</h3>
+            <button class="close-btn" onclick="closeBrowseModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div id="browse-current-path" style="padding:8px 12px;background:var(--bg-secondary);border-radius:6px;font-family:monospace;font-size:0.9rem;margin-bottom:12px;word-break:break-all;">/</div>
+            <ul id="directory-list" style="list-style:none;padding:0;margin:0;max-height:400px;overflow-y:auto;border:1px solid var(--border-color);border-radius:6px;">
+            </ul>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-cancel" onclick="closeBrowseModal()">Cancel</button>
+            <button class="btn-primary" onclick="selectCurrentDirectory()">Select This Folder</button>
+        </div>
+    </div>
+</div>
+
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 {% endblock %}
@@ -1255,12 +1274,17 @@
             const escapedName = escapeHtml(field.name);
             const escapedDefault = escapeHtml(field.default || '');
             const escapedLabel = escapeHtml(field.label);
+            const isLocalFilesDirectory = (type === 'localfiles') &&
+                (field.name === 'music_directory' || field.name === 'playlist_directory');
+
             if (field.type === 'password') {
                 inputHtml = `<input type="password" id="field-${escapedName}" value="${escapedValue}" placeholder="${escapedDefault}">`;
             } else if (field.type === 'boolean') {
                 inputHtml = `<label class="checkbox-label"><input type="checkbox" id="field-${escapedName}" ${value ? 'checked' : ''}><span>${escapedLabel}</span></label>`;
             } else if (field.type === 'number') {
                 inputHtml = `<input type="number" id="field-${escapedName}" value="${escapedValue}">`;
+            } else if (isLocalFilesDirectory) {
+                inputHtml = `<div style="display:flex;gap:8px;"><input type="text" id="field-${escapedName}" value="${escapedValue}" placeholder="${escapedDefault}" style="flex:1;"><button type="button" onclick="pickNativeFolder('field-${escapedName}')" style="padding:8px 16px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);cursor:pointer;white-space:nowrap;">Browse</button></div>`;
             } else {
                 inputHtml = `<input type="text" id="field-${escapedName}" value="${escapedValue}" placeholder="${escapedDefault}">`;
             }
@@ -1521,7 +1545,18 @@
     }
 
     async function deleteProvider(id) {
-        if (!confirm('Are you sure you want to delete this provider?')) return;
+        // WKWebView blocks confirm() on remote content, so use a simple inline confirmation
+        const btn = event.target;
+        if (btn.dataset.confirmDelete !== 'yes') {
+            btn.textContent = 'Confirm Delete?';
+            btn.dataset.confirmDelete = 'yes';
+            setTimeout(() => {
+                btn.textContent = 'Delete';
+                btn.dataset.confirmDelete = '';
+            }, 3000);
+            return;
+        }
+        btn.dataset.confirmDelete = '';
 
         try {
             const response = await fetch(`/api/setup/providers/${id}`, {
@@ -1786,6 +1821,10 @@
                 isDirty = false;
                 document.getElementById('save-btn').disabled = true;
                 settings = { ...settings, ...settingsData };
+                if (primaryProviderId) {
+                    settings.primary_provider_id = parseInt(primaryProviderId);
+                }
+                renderProviders();
                 showToast('Settings saved successfully', 'success');
             } else {
                 showToast('Failed to save settings', 'error');
@@ -1847,6 +1886,105 @@
             btn.disabled = false;
             btn.textContent = 'Check for Duplicates';
         }
+    }
+
+    // Native macOS folder picker
+    async function pickNativeFolder(inputId) {
+        try {
+            const response = await fetch('/api/setup/pick-folder');
+            const data = await response.json();
+            if (data.path) {
+                document.getElementById(inputId).value = data.path;
+                // Auto-fill playlist directory when music directory is selected
+                if (inputId === 'field-music_directory') {
+                    const playlistField = document.getElementById('field-playlist_directory');
+                    if (playlistField && !playlistField.value) {
+                        playlistField.value = data.path + '/playlists';
+                    }
+                }
+            }
+        } catch (err) {
+            console.error('Folder picker error:', err);
+        }
+    }
+
+    // Directory browser (fallback)
+    let browseTargetInput = null;
+    let browseCurrentPath = '/';
+
+    function openBrowseModal(inputId) {
+        browseTargetInput = document.getElementById(inputId);
+        browseCurrentPath = browseTargetInput.value || '/';
+        const modal = document.getElementById('directory-browser-modal');
+        modal.style.display = '';
+        modal.classList.add('visible');
+        loadDirectories(browseCurrentPath);
+    }
+
+    function closeBrowseModal() {
+        const modal = document.getElementById('directory-browser-modal');
+        modal.classList.remove('visible');
+        modal.style.display = 'none';
+        browseTargetInput = null;
+    }
+
+    async function loadDirectories(path) {
+        const listEl = document.getElementById('directory-list');
+        const pathEl = document.getElementById('browse-current-path');
+        listEl.innerHTML = '<li style="padding:1rem;color:var(--text-muted);">Loading...</li>';
+        pathEl.textContent = path || '/';
+        browseCurrentPath = path;
+        try {
+            const url = path ? `/api/setup/browse-directories?path=${encodeURIComponent(path)}` : '/api/setup/browse-directories';
+            const response = await fetch(url);
+            const data = await response.json();
+            if (data.error) {
+                listEl.innerHTML = `<li style="padding:1rem;color:var(--color-danger);">${escapeHtml(data.error)}</li>`;
+                return;
+            }
+            listEl.innerHTML = '';
+            if (data.parent_path !== null) {
+                const parentLi = document.createElement('li');
+                parentLi.style.cssText = 'padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--border-color);';
+                parentLi.innerHTML = '📁 .. (Parent Directory)';
+                parentLi.onclick = () => loadDirectories(data.parent_path);
+                parentLi.onmouseenter = () => parentLi.style.background = 'var(--bg-secondary)';
+                parentLi.onmouseleave = () => parentLi.style.background = '';
+                listEl.appendChild(parentLi);
+            }
+            if (data.directories.length === 0) {
+                const emptyLi = document.createElement('li');
+                emptyLi.style.cssText = 'padding:1rem;color:var(--text-muted);';
+                emptyLi.textContent = 'No subdirectories found';
+                listEl.appendChild(emptyLi);
+            } else {
+                data.directories.forEach(dir => {
+                    const li = document.createElement('li');
+                    li.style.cssText = 'padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--border-color);';
+                    li.innerHTML = `📁 ${escapeHtml(dir.name)}`;
+                    if (dir.accessible !== false) {
+                        li.onclick = () => loadDirectories(dir.path);
+                        li.onmouseenter = () => li.style.background = 'var(--bg-secondary)';
+                        li.onmouseleave = () => li.style.background = '';
+                    } else {
+                        li.style.opacity = '0.5';
+                        li.style.cursor = 'not-allowed';
+                    }
+                    listEl.appendChild(li);
+                });
+            }
+            pathEl.textContent = data.current_path;
+            browseCurrentPath = data.current_path;
+        } catch (err) {
+            listEl.innerHTML = `<li style="padding:1rem;color:var(--color-danger);">Error: ${escapeHtml(err.message)}</li>`;
+        }
+    }
+
+    function selectCurrentDirectory() {
+        if (browseTargetInput && browseCurrentPath) {
+            browseTargetInput.value = browseCurrentPath;
+        }
+        closeBrowseModal();
     }
 
     // Toast notifications

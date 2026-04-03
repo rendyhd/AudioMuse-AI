@@ -12,8 +12,12 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__))) # Adds the current d
 # Signal to app.py that we are an RQ worker, so it should skip index loading and background threads
 os.environ['AUDIOMUSE_ROLE'] = 'worker'
 
-# Import Worker from rq
-from rq import Worker
+# Import Worker from rq — use SimpleWorker on macOS to avoid fork() crashes
+import platform
+if platform.system() == 'Darwin':
+    from rq import SimpleWorker as Worker
+else:
+    from rq import Worker
 
 # Import the redis_conn, rq_queue (which is the 'default' queue),
 # and the Flask app instance from your main app.py.

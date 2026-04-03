@@ -41,21 +41,52 @@ SUPPORTED_FORMATS = {'.mp3', '.flac', '.ogg', '.m4a', '.mp4', '.wav', '.wma', '.
 # ##############################################################################
 
 def get_config(overrides: Dict = None) -> Dict:
-    """Get local file provider configuration from config module, then environment, then defaults.
+    """Get local file provider configuration.
 
-    The config module attributes are checked first so that _get_all_songs_with_config()
-    in app_setup.py can temporarily patch them for multi-provider sync.
+    Priority: overrides > DB provider config > environment/config.py > defaults.
+    The DB provider config is checked so that paths configured via the setup UI
+    are used even when env vars have Docker defaults like /music.
     """
+    # Start with env/config.py values
     cfg = {
-        'music_directory': getattr(config, 'LOCALFILES_MUSIC_DIRECTORY', None)
-                           or os.environ.get('LOCALFILES_MUSIC_DIRECTORY', '/music'),
+        'music_directory': os.environ.get('LOCALFILES_MUSIC_DIRECTORY', '')
+                           or getattr(config, 'LOCALFILES_MUSIC_DIRECTORY', ''),
         'supported_formats': getattr(config, 'LOCALFILES_FORMATS', None)
                              or os.environ.get('LOCALFILES_FORMATS', ','.join(SUPPORTED_FORMATS)),
         'scan_subdirectories': getattr(config, 'LOCALFILES_SCAN_SUBDIRS', None),
         'use_embedded_metadata': os.environ.get('LOCALFILES_USE_METADATA', 'true').lower() == 'true',
-        'playlist_directory': getattr(config, 'LOCALFILES_PLAYLIST_DIR', None)
-                              or os.environ.get('LOCALFILES_PLAYLIST_DIR', '/music/playlists'),
+        'playlist_directory': os.environ.get('LOCALFILES_PLAYLIST_DIR', '')
+                              or getattr(config, 'LOCALFILES_PLAYLIST_DIR', ''),
     }
+
+    # DB provider config takes priority over hardcoded defaults
+    try:
+        import json
+        from app_helper import get_db
+        with get_db() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT config FROM provider WHERE provider_type = 'localfiles' AND enabled = TRUE ORDER BY priority DESC LIMIT 1"
+            )
+            row = cur.fetchone()
+            if row and row[0]:
+                db_cfg = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+                if db_cfg.get('music_directory'):
+                    cfg['music_directory'] = db_cfg['music_directory']
+                if db_cfg.get('playlist_directory'):
+                    cfg['playlist_directory'] = db_cfg['playlist_directory']
+                if db_cfg.get('supported_formats'):
+                    cfg['supported_formats'] = db_cfg['supported_formats']
+                if db_cfg.get('scan_subdirectories') is not None:
+                    cfg['scan_subdirectories'] = db_cfg['scan_subdirectories']
+    except Exception as e:
+        logger.debug(f"Could not load localfiles config from DB: {e}")
+
+    # Fallback defaults if still empty
+    if not cfg['music_directory']:
+        cfg['music_directory'] = '/music'
+    if not cfg['playlist_directory']:
+        cfg['playlist_directory'] = cfg['music_directory'] + '/playlists'
+
     # Handle supported_formats: ensure it's a list
     if isinstance(cfg['supported_formats'], str):
         cfg['supported_formats'] = cfg['supported_formats'].split(',')
@@ -900,7 +931,7 @@ def get_provider_info() -> Dict:
                 'type': 'path',
                 'required': True,
                 'description': 'Path to your music library folder',
-                'default': '/music'
+                'default': ''
             },
             {
                 'name': 'scan_subdirectories',
@@ -916,7 +947,7 @@ def get_provider_info() -> Dict:
                 'type': 'path',
                 'required': False,
                 'description': 'Where to save generated M3U playlists',
-                'default': '/music/playlists'
+                'default': ''
             },
             {
                 'name': 'music_path_prefix',

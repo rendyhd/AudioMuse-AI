@@ -1218,6 +1218,27 @@
 
     // Directory browser state
     let browseCurrentPath = '/';
+    // Native macOS folder picker
+    async function pickNativeFolder(inputId) {
+        try {
+            const response = await fetch('/api/setup/pick-folder');
+            const data = await response.json();
+            if (data.path) {
+                document.getElementById(inputId).value = data.path;
+                // Auto-fill playlist directory when music directory is selected
+                if (inputId.includes('music_directory')) {
+                    const playlistId = inputId.replace('music_directory', 'playlist_directory');
+                    const playlistField = document.getElementById(playlistId);
+                    if (playlistField && !playlistField.value) {
+                        playlistField.value = data.path + '/playlists';
+                    }
+                }
+            }
+        } catch (err) {
+            console.error('Folder picker error:', err);
+        }
+    }
+
     let browseTargetInput = null;
 
     // Track tested providers for mandatory test connection and cross-provider prefix detection
@@ -1483,7 +1504,6 @@
             const card = document.createElement('div');
             card.className = `provider-card ${isSelected ? 'selected' : ''}`;
             card.dataset.type = provider.type;
-            card.onclick = () => toggleProvider(provider.type);
 
             card.innerHTML = `
                 <div class="provider-name">
@@ -1498,6 +1518,19 @@
 
         updateProviderConfigSection();
     }
+
+    // Use event delegation for provider cards (avoids WKWebView click issues with dynamic elements)
+    document.addEventListener('DOMContentLoaded', function() {
+        const grid = document.getElementById('provider-grid');
+        if (grid) {
+            grid.addEventListener('click', function(e) {
+                const card = e.target.closest('.provider-card');
+                if (card && card.dataset.type) {
+                    toggleProvider(card.dataset.type);
+                }
+            });
+        }
+    });
 
     function toggleProvider(type) {
         const idx = selectedProviders.indexOf(type);
@@ -1589,7 +1622,7 @@
                                          value="${safeDefault}"
                                          placeholder="${safeDefault}"
                                          data-provider="${type}" data-field="${safeName}">
-                                    <button type="button" class="browse-btn" onclick="openBrowseModal('config-${type}-${safeName}')">Browse</button>
+                                    <button type="button" class="browse-btn" onclick="pickNativeFolder('config-${type}-${safeName}')">Browse</button>
                                  </div>`;
                 } else {
                     inputHtml = `<input type="text" id="config-${type}-${safeName}"

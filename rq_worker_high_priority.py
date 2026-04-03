@@ -8,7 +8,12 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 # Signal to app.py that we are an RQ worker, so it should skip index loading and background threads
 os.environ['AUDIOMUSE_ROLE'] = 'worker'
 
-from rq import Worker
+# Use SimpleWorker on macOS to avoid fork() crashes
+import platform
+if platform.system() == 'Darwin':
+    from rq import SimpleWorker as Worker
+else:
+    from rq import Worker
 
 try:
     from app_helper import redis_conn

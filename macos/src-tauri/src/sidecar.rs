@@ -4,7 +4,7 @@
 
 use crate::ports::AllocatedPorts;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tracing::{error, info, warn};
@@ -30,7 +30,7 @@ impl ManagedProcess {
 pub struct SidecarManager {
     data_dir: PathBuf,
     ports: AllocatedPorts,
-    postgres: Option<ManagedProcess>,
+    postgres_running: bool,
     redis: Option<ManagedProcess>,
     flask: Option<ManagedProcess>,
     worker_default: Option<ManagedProcess>,
@@ -43,7 +43,7 @@ impl SidecarManager {
         Self {
             data_dir,
             ports,
-            postgres: None,
+            postgres_running: false,
             redis: None,
             flask: None,
             worker_default: None,
@@ -115,10 +115,15 @@ impl SidecarManager {
         // Paths
         let temp_dir = self.data_dir.join("temp_audio");
         env.insert("TEMP_DIR".into(), temp_dir.to_string_lossy().into());
-        env.insert(
-            "MODEL_DIR".into(),
-            self.data_dir.join("models").to_string_lossy().into(),
-        );
+        let models_dir = self.data_dir.join("models");
+        env.insert("MODEL_DIR".into(), models_dir.to_string_lossy().into());
+
+        // Set individual model paths (defaults are /app/model/ which doesn't exist on macOS)
+        env.insert("EMBEDDING_MODEL_PATH".into(), models_dir.join("musicnn_embedding.onnx").to_string_lossy().into());
+        env.insert("PREDICTION_MODEL_PATH".into(), models_dir.join("musicnn_prediction.onnx").to_string_lossy().into());
+        env.insert("CLAP_AUDIO_MODEL_PATH".into(), models_dir.join("model_epoch_36.onnx").to_string_lossy().into());
+        env.insert("CLAP_TEXT_MODEL_PATH".into(), models_dir.join("clap_text_model.onnx").to_string_lossy().into());
+        env.insert("MULAN_MODEL_DIR".into(), models_dir.join("mulan").to_string_lossy().into());
         env.insert(
             "HF_HOME".into(),
             self.data_dir
@@ -131,6 +136,12 @@ impl SidecarManager {
         // Flask
         env.insert("FLASK_HOST".into(), "127.0.0.1".into());
         env.insert("FLASK_PORT".into(), self.ports.flask.to_string());
+
+        // macOS: prevent ObjC fork() crash in RQ worker child processes
+        env.insert("OBJC_DISABLE_INITIALIZE_FORK_SAFETY".into(), "YES".into());
+
+        // macOS: don't auto-create a default localfiles provider — let the setup wizard handle it
+        env.entry("MEDIASERVER_TYPE".to_string()).or_insert_with(|| "".to_string());
 
         // Read user config.env if it exists
         let config_env_path = self.data_dir.join("config.env");
@@ -187,6 +198,8 @@ impl SidecarManager {
                 "--encoding=UTF8",
                 "--locale=C",
             ])
+            .env("LC_ALL", "C")
+            .env("LC_CTYPE", "C")
             .output()
             .map_err(|e| format!("Failed to run initdb: {}", e))?;
 
@@ -201,43 +214,48 @@ impl SidecarManager {
         Ok(())
     }
 
-    /// Start the PostgreSQL server.
+    /// Start the PostgreSQL server using pg_ctl (avoids "multithreaded" error).
     fn start_postgres(&mut self) -> Result<(), String> {
         self.init_postgres()?;
 
         let pg_data = self.data_dir.join("postgres").join("data");
         let log_file = self.data_dir.join("logs").join("postgres.log");
-        let postgres_bin = self.resource_bin("postgres/bin/postgres");
+        let pg_ctl = self.resource_bin("postgres/bin/pg_ctl");
 
         info!("Starting PostgreSQL on port {}", self.ports.postgres);
 
-        let child = Command::new(&postgres_bin)
+        let pg_options = format!(
+            "-p {} -k '{}' -c logging_collector=on -c \"log_directory={}\" -c log_filename=postgres.log -c listen_addresses=127.0.0.1",
+            self.ports.postgres,
+            self.data_dir.join("postgres").to_string_lossy(),
+            self.data_dir.join("logs").to_string_lossy(),
+        );
+
+        let output = Command::new(&pg_ctl)
             .args([
+                "start",
                 "-D",
                 &pg_data.to_string_lossy(),
-                "-p",
-                &self.ports.postgres.to_string(),
-                "-k",
-                &self.data_dir.join("postgres").to_string_lossy(),
-                "-c",
-                &format!("logging_collector=on"),
-                "-c",
-                &format!("log_directory={}", self.data_dir.join("logs").to_string_lossy()),
-                "-c",
-                "log_filename=postgres.log",
-                "-c",
-                "listen_addresses=127.0.0.1",
+                "-l",
+                &log_file.to_string_lossy(),
+                "-o",
+                &pg_options,
+                "-w",
             ])
-            .stdout(Stdio::null())
-            .stderr(
-                std::fs::File::create(&log_file)
-                    .map(Stdio::from)
-                    .unwrap_or(Stdio::null()),
-            )
-            .spawn()
-            .map_err(|e| format!("Failed to start PostgreSQL: {}", e))?;
+            .env("LC_ALL", "C")
+            .env("LC_CTYPE", "C")
+            .output()
+            .map_err(|e| format!("Failed to start PostgreSQL via pg_ctl: {}", e))?;
 
-        self.postgres = Some(ManagedProcess::new(child, "PostgreSQL"));
+        if !output.status.success() {
+            return Err(format!(
+                "pg_ctl start failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+
+        self.postgres_running = true;
+        info!("PostgreSQL started via pg_ctl");
 
         // Wait for PostgreSQL to accept connections
         self.wait_for_postgres(15)?;
@@ -495,54 +513,19 @@ impl SidecarManager {
         info!("Stopping all backend services");
 
         // Stop in reverse startup order
-        self.stop_process(&mut self.flask.take(), "Flask");
-        self.stop_process(&mut self.janitor.take(), "Janitor");
-        self.stop_process(&mut self.worker_high.take(), "Worker (high)");
-        self.stop_process(&mut self.worker_default.take(), "Worker (default)");
-        self.stop_process(&mut self.redis.take(), "Redis");
+        stop_process(&mut self.flask, "Flask");
+        stop_process(&mut self.janitor, "Janitor");
+        stop_process(&mut self.worker_high, "Worker (high)");
+        stop_process(&mut self.worker_default, "Worker (default)");
+        stop_process(&mut self.redis, "Redis");
         self.stop_postgres();
 
         info!("All services stopped");
     }
 
-    /// Stop a single managed process gracefully.
-    fn stop_process(&self, process: &mut Option<ManagedProcess>, label: &str) {
-        if let Some(ref mut proc) = process {
-            info!("Stopping {}", label);
-
-            // Send SIGTERM via nix
-            let pid = nix::unistd::Pid::from_raw(proc.child.id() as i32);
-            let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
-
-            // Wait up to 5 seconds for graceful shutdown
-            let start = std::time::Instant::now();
-            loop {
-                match proc.child.try_wait() {
-                    Ok(Some(_)) => {
-                        info!("{} stopped gracefully", label);
-                        return;
-                    }
-                    Ok(None) => {
-                        if start.elapsed() > Duration::from_secs(5) {
-                            warn!("{} did not stop in time, sending SIGKILL", label);
-                            let _ = proc.child.kill();
-                            let _ = proc.child.wait();
-                            return;
-                        }
-                        std::thread::sleep(Duration::from_millis(200));
-                    }
-                    Err(e) => {
-                        error!("Error waiting for {}: {}", label, e);
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
     /// Stop PostgreSQL using pg_ctl for clean shutdown.
     fn stop_postgres(&mut self) {
-        if self.postgres.is_some() {
+        if self.postgres_running {
             info!("Stopping PostgreSQL");
             let pg_ctl = self.resource_bin("postgres/bin/pg_ctl");
             let pg_data = self.data_dir.join("postgres").join("data");
@@ -563,37 +546,32 @@ impl SidecarManager {
                     info!("PostgreSQL stopped cleanly via pg_ctl");
                 }
                 _ => {
-                    // Fallback: kill the process directly
-                    warn!("pg_ctl stop failed, killing process directly");
-                    self.stop_process(&mut self.postgres.take(), "PostgreSQL");
-                    return;
+                    warn!("pg_ctl stop failed");
                 }
             }
 
-            // Wait for the child to reap
-            if let Some(ref mut proc) = self.postgres {
-                let _ = proc.child.wait();
-            }
-            self.postgres = None;
+            self.postgres_running = false;
         }
     }
 
     /// Check worker health and restart crashed processes.
     /// Call this periodically (e.g., every 10 seconds from a Tauri timer).
     pub fn health_check(&mut self) {
-        self.maybe_restart(&mut self.worker_default.take(), "worker_default", "rq_worker.py");
-        self.maybe_restart(&mut self.worker_high.take(), "worker_high", "rq_worker_high_priority.py");
-        self.maybe_restart(&mut self.janitor.take(), "janitor", "rq_janitor.py");
+        self.maybe_restart_field("worker_default", "rq_worker.py");
+        self.maybe_restart_field("worker_high", "rq_worker_high_priority.py");
+        self.maybe_restart_field("janitor", "rq_janitor.py");
     }
 
-    /// Restart a process if it has exited unexpectedly.
-    fn maybe_restart(
-        &mut self,
-        process: &mut Option<ManagedProcess>,
-        name: &str,
-        script: &str,
-    ) {
-        if let Some(ref mut proc) = process {
+    /// Restart a process field if it has exited unexpectedly.
+    fn maybe_restart_field(&mut self, name: &str, script: &str) {
+        let field = match name {
+            "worker_default" => &mut self.worker_default,
+            "worker_high" => &mut self.worker_high,
+            "janitor" => &mut self.janitor,
+            _ => return,
+        };
+
+        let should_restart = if let Some(ref mut proc) = field {
             match proc.child.try_wait() {
                 Ok(Some(status)) => {
                     if proc.restart_count < 10 {
@@ -603,26 +581,77 @@ impl SidecarManager {
                             status,
                             proc.restart_count + 1
                         );
-                        let extra_env: Vec<(&str, &str)> = if name.starts_with("worker") {
-                            vec![("AUDIOMUSE_ROLE", "worker")]
-                        } else {
-                            vec![]
-                        };
-                        match self.start_python_process(script, name, &extra_env) {
-                            Ok(mut new_proc) => {
-                                new_proc.restart_count = proc.restart_count + 1;
-                                *process = Some(new_proc);
-                            }
-                            Err(e) => error!("Failed to restart {}: {}", name, e),
-                        }
+                        Some(proc.restart_count + 1)
                     } else {
                         error!("{} exceeded max restarts (10), giving up", name);
+                        None
                     }
                 }
-                Ok(None) => {
-                    // Still running, all good
+                Ok(None) => None, // Still running
+                Err(e) => {
+                    error!("Error checking {} status: {}", name, e);
+                    None
                 }
-                Err(e) => error!("Error checking {} status: {}", name, e),
+            }
+        } else {
+            None
+        };
+
+        if let Some(restart_count) = should_restart {
+            let extra_env: Vec<(&str, &str)> = if name.starts_with("worker") {
+                vec![("AUDIOMUSE_ROLE", "worker")]
+            } else {
+                vec![]
+            };
+            match self.start_python_process(script, name, &extra_env) {
+                Ok(mut new_proc) => {
+                    new_proc.restart_count = restart_count;
+                    let field = match name {
+                        "worker_default" => &mut self.worker_default,
+                        "worker_high" => &mut self.worker_high,
+                        "janitor" => &mut self.janitor,
+                        _ => return,
+                    };
+                    *field = Some(new_proc);
+                }
+                Err(e) => error!("Failed to restart {}: {}", name, e),
+            }
+        }
+    }
+}
+
+/// Stop a single managed process gracefully (free function to avoid borrow issues).
+fn stop_process(process: &mut Option<ManagedProcess>, label: &str) {
+    if let Some(ref mut proc) = process {
+        info!("Stopping {}", label);
+
+        // Send SIGTERM via nix
+        let pid = nix::unistd::Pid::from_raw(proc.child.id() as i32);
+        let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
+
+        // Wait up to 5 seconds for graceful shutdown
+        let start = std::time::Instant::now();
+        loop {
+            match proc.child.try_wait() {
+                Ok(Some(_)) => {
+                    info!("{} stopped gracefully", label);
+                    *process = None;
+                    return;
+                }
+                Ok(None) => {
+                    if start.elapsed() > Duration::from_secs(5) {
+                        warn!("{} did not stop in time, sending SIGKILL", label);
+                        let _ = proc.child.kill();
+                        let _ = proc.child.wait();
+                        *process = None;
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                Err(e) => {
+                    error!("Error waiting for {}: {}", label, e);
+                    return;
+                }
             }
         }
     }

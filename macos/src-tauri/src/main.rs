@@ -8,7 +8,7 @@ mod setup;
 mod sidecar;
 
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tracing::{error, info};
 
 /// Shared application state holding managed child processes.
@@ -97,7 +97,7 @@ fn main() {
                 let state = window.state::<AppState>();
                 if let Some(ref mut manager) = *state.sidecar.lock().unwrap() {
                     manager.stop_all();
-                }
+                };
             }
         })
         .run(tauri::generate_context!())

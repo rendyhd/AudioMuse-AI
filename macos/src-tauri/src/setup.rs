@@ -6,8 +6,8 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use tauri::AppHandle;
-use tracing::{error, info, warn};
+use tauri::{AppHandle, Emitter, Manager};
+use tracing::{info, warn};
 
 /// Required directory structure under ~/Library/Application Support/AudioMuse-AI/
 const SUBDIRS: &[&str] = &[
@@ -71,31 +71,31 @@ struct ModelFile {
 /// These match the Dockerfile download URLs.
 const CORE_MODELS: &[ModelFile] = &[
     ModelFile {
-        url: "https://github.com/rendyhd/AudioMuse-AI/releases/download/v4.0.0-model/musicnn_embedding.onnx",
+        url: "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/musicnn_embedding.onnx",
         filename: "musicnn_embedding.onnx",
         subdir: "",
         sha256: None,
     },
     ModelFile {
-        url: "https://github.com/rendyhd/AudioMuse-AI/releases/download/v4.0.0-model/musicnn_prediction.onnx",
+        url: "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/musicnn_prediction.onnx",
         filename: "musicnn_prediction.onnx",
         subdir: "",
         sha256: None,
     },
     ModelFile {
-        url: "https://github.com/rendyhd/AudioMuse-AI/releases/download/DCLAP.v1/model_epoch_36.onnx",
+        url: "https://github.com/NeptuneHub/AudioMuse-AI-DCLAP/releases/download/v1/model_epoch_36.onnx",
         filename: "model_epoch_36.onnx",
         subdir: "",
         sha256: None,
     },
     ModelFile {
-        url: "https://github.com/rendyhd/AudioMuse-AI/releases/download/DCLAP.v1/model_epoch_36.onnx.data",
+        url: "https://github.com/NeptuneHub/AudioMuse-AI-DCLAP/releases/download/v1/model_epoch_36.onnx.data",
         filename: "model_epoch_36.onnx.data",
         subdir: "",
         sha256: None,
     },
     ModelFile {
-        url: "https://github.com/rendyhd/AudioMuse-AI/releases/download/v4.0.0-model/clap_text_model.onnx",
+        url: "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/clap_text_model.onnx",
         filename: "clap_text_model.onnx",
         subdir: "",
         sha256: None,
