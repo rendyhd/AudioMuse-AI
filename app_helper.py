@@ -196,6 +196,29 @@ def init_db():
                 cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
             # Always ensure the index exists (handles installs where column was added without index)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_score_file_path ON score(file_path)")
+            # Add 'updated_at' column if not exists (for sync API incremental sync)
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'updated_at')")
+            if not cur.fetchone()[0]:
+                logger.info("Adding 'updated_at' column to 'score' table.")
+                cur.execute("ALTER TABLE score ADD COLUMN updated_at TIMESTAMP")
+                cur.execute("UPDATE score SET updated_at = t.updated_at FROM track t WHERE score.track_id = t.id")
+                cur.execute("ALTER TABLE score ALTER COLUMN updated_at SET DEFAULT CURRENT_TIMESTAMP")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_score_updated_at ON score(updated_at)")
+            # Add 'duration_seconds' column if not exists
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'duration_seconds')")
+            if not cur.fetchone()[0]:
+                logger.info("Adding 'duration_seconds' column to 'score' table.")
+                cur.execute("ALTER TABLE score ADD COLUMN duration_seconds REAL")
+            # Add 'track_number' column if not exists
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'track_number')")
+            if not cur.fetchone()[0]:
+                logger.info("Adding 'track_number' column to 'score' table.")
+                cur.execute("ALTER TABLE score ADD COLUMN track_number INTEGER")
+            # Add 'disc_number' column if not exists
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'disc_number')")
+            if not cur.fetchone()[0]:
+                logger.info("Adding 'disc_number' column to 'score' table.")
+                cur.execute("ALTER TABLE score ADD COLUMN disc_number INTEGER")
 
             # Ensure we have a searchable, accent-stripped `search_u` column.
             # Postgres does not allow generated columns to call `unaccent()` (it's not marked immutable),
@@ -372,6 +395,31 @@ def init_db():
             """)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_provider_track_item_id ON provider_track(item_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_provider_track_track_id ON provider_track(track_id)")
+
+            # Create 'deleted_tracks' table - Tracks deletion log for incremental sync
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS deleted_tracks (
+                    track_id INTEGER NOT NULL,
+                    deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_deleted_tracks_deleted_at ON deleted_tracks(deleted_at)")
+            # Trigger to auto-log track deletions
+            cur.execute("""
+                CREATE OR REPLACE FUNCTION log_track_deletion() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    INSERT INTO deleted_tracks (track_id, deleted_at) VALUES (OLD.id, CURRENT_TIMESTAMP);
+                    RETURN OLD;
+                END;
+                $$
+            """)
+            cur.execute("DROP TRIGGER IF EXISTS track_deletion_log_trigger ON track")
+            cur.execute("""
+                CREATE TRIGGER track_deletion_log_trigger
+                    BEFORE DELETE ON track
+                    FOR EACH ROW
+                    EXECUTE FUNCTION log_track_deletion()
+            """)
 
             # Create 'app_settings' table - Application configuration storage
             cur.execute("""
@@ -695,7 +743,7 @@ def track_exists(track_id):
     cur.close()
     return row is not None
 
-def save_track_analysis_and_embedding(track_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None, album_artist=None, year=None, rating=None, file_path=None, provider_id=None, item_id=None):
+def save_track_analysis_and_embedding(track_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None, album_artist=None, year=None, rating=None, file_path=None, provider_id=None, item_id=None, duration_seconds=None, track_number=None, disc_number=None):
     """Saves track analysis and embedding in a single transaction.
 
     Args:
@@ -827,8 +875,8 @@ def save_track_analysis_and_embedding(track_id, title, author, tempo, key, scale
     try:
         # Save analysis to score table (track_id is the PK)
         cur.execute("""
-            INSERT INTO score (track_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating, file_path)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO score (track_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating, file_path, duration_seconds, track_number, disc_number, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
             ON CONFLICT (track_id) DO UPDATE SET
                 title = EXCLUDED.title,
                 author = EXCLUDED.author,
@@ -842,8 +890,12 @@ def save_track_analysis_and_embedding(track_id, title, author, tempo, key, scale
                 album_artist = EXCLUDED.album_artist,
                 year = EXCLUDED.year,
                 rating = EXCLUDED.rating,
-                file_path = EXCLUDED.file_path
-        """, (track_id, title, author, tempo, key, scale, mood_str, energy, other_features, album, album_artist, year, rating, file_path))
+                file_path = EXCLUDED.file_path,
+                duration_seconds = COALESCE(EXCLUDED.duration_seconds, score.duration_seconds),
+                track_number = COALESCE(EXCLUDED.track_number, score.track_number),
+                disc_number = COALESCE(EXCLUDED.disc_number, score.disc_number),
+                updated_at = CURRENT_TIMESTAMP
+        """, (track_id, title, author, tempo, key, scale, mood_str, energy, other_features, album, album_artist, year, rating, file_path, duration_seconds, track_number, disc_number))
 
         # Save embedding
         if isinstance(embedding_vector, np.ndarray) and embedding_vector.size > 0:
