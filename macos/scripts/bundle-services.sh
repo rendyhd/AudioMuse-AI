@@ -100,7 +100,7 @@ fi
 
 FFMPEG_PATH="$RESOURCES_DIR/ffmpeg"
 echo ""
-echo ">>> Bundling ffmpeg..."
+echo ">>> Bundling ffmpeg (static build)..."
 
 if [ -f "$FFMPEG_PATH" ]; then
     echo "ffmpeg already bundled, skipping"
@@ -111,7 +111,11 @@ else
     fi
 
     FFMPEG_PREFIX="$(brew --prefix ffmpeg)"
-    cp "$FFMPEG_PREFIX/bin/ffmpeg" "$FFMPEG_PATH"
+
+    # Bundle ffmpeg into its own directory with all dylib dependencies
+    FFMPEG_BUNDLE="$RESOURCES_DIR/ffmpeg"
+    mkdir -p "$FFMPEG_BUNDLE/bin" "$FFMPEG_BUNDLE/lib"
+    cp "$FFMPEG_PREFIX/bin/ffmpeg" "$FFMPEG_BUNDLE/bin/"
 
     echo "ffmpeg bundled to $FFMPEG_PATH"
 fi
@@ -121,44 +125,106 @@ fi
 echo ""
 echo ">>> Fixing dylib references for relocatability..."
 
-# For each binary, update dylib references to use @executable_path/../lib/
-fix_dylib_refs() {
-    local binary="$1"
-    local lib_dir="$2"
+# Recursively copy missing Homebrew dylibs and rewrite all references.
+# Runs multiple passes until no new libraries are discovered.
+fix_all_dylibs() {
+    local lib_dir="$1"
+    shift
+    local -a bin_dirs=("$@")
 
-    # Get all non-system dylib dependencies
-    otool -L "$binary" 2>/dev/null | tail -n +2 | while read -r line; do
-        local dylib
-        dylib=$(echo "$line" | awk '{print $1}')
+    local changed=1
+    local pass=0
+    while [ "$changed" -eq 1 ]; do
+        changed=0
+        pass=$((pass + 1))
+        echo "  Pass $pass: scanning for Homebrew dylib references..."
 
-        # Skip system frameworks and libraries
-        case "$dylib" in
-            /usr/lib/*|/System/*|@rpath/*|@executable_path/*|@loader_path/*)
-                continue
-                ;;
-        esac
+        # Scan all binaries and dylibs
+        for f in "${bin_dirs[@]}"/* "$lib_dir"/*.dylib; do
+            [ -f "$f" ] || continue
+            otool -L "$f" 2>/dev/null | tail -n +2 | awk '{print $1}' | while read -r dep; do
+                # Skip system and already-fixed references
+                case "$dep" in
+                    /usr/lib/*|/System/*|@rpath/*|@executable_path/*|@loader_path/*) continue ;;
+                esac
 
-        local basename
-        basename=$(basename "$dylib")
+                local base
+                base=$(basename "$dep")
 
-        # If the dylib exists in our lib dir, update the reference
-        if [ -f "$lib_dir/$basename" ]; then
-            install_name_tool -change "$dylib" "@executable_path/../lib/$basename" "$binary" 2>/dev/null || true
-        else
-            # Try to copy the dylib to our lib dir
-            if [ -f "$dylib" ]; then
-                cp "$dylib" "$lib_dir/" 2>/dev/null || true
-                install_name_tool -change "$dylib" "@executable_path/../lib/$basename" "$binary" 2>/dev/null || true
+                # Copy the library if we don't have it yet
+                if [ ! -f "$lib_dir/$base" ] && [ -f "$dep" ]; then
+                    cp "$dep" "$lib_dir/"
+                    chmod u+rw "$lib_dir/$base"
+                    echo "    Copied: $base"
+                    # Signal another pass is needed to resolve this lib's deps
+                    echo "CHANGED" > /tmp/_dylib_changed
+                fi
+            done
+        done
+
+        # Check if new libs were added
+        if [ -f /tmp/_dylib_changed ]; then
+            rm -f /tmp/_dylib_changed
+            changed=1
+        fi
+    done
+
+    echo "  Rewriting all references to @loader_path / @executable_path..."
+
+    # Now rewrite all references in all files
+    for f in "${bin_dirs[@]}"/* "$lib_dir"/*.dylib; do
+        [ -f "$f" ] || continue
+        local is_bin=false
+        for bd in "${bin_dirs[@]}"; do
+            case "$f" in "$bd"/*) is_bin=true ;; esac
+        done
+
+        otool -L "$f" 2>/dev/null | tail -n +2 | awk '{print $1}' | while read -r dep; do
+            case "$dep" in
+                /usr/lib/*|/System/*|@rpath/*|@executable_path/*|@loader_path/*) continue ;;
+            esac
+            local base
+            base=$(basename "$dep")
+            if [ -f "$lib_dir/$base" ]; then
+                if [ "$is_bin" = true ]; then
+                    install_name_tool -change "$dep" "@executable_path/../lib/$base" "$f" 2>/dev/null || true
+                else
+                    install_name_tool -change "$dep" "@loader_path/$base" "$f" 2>/dev/null || true
+                fi
             fi
+        done
+
+        # Fix the install name of dylibs themselves
+        if [ "$is_bin" = false ]; then
+            local self_name
+            self_name=$(otool -D "$f" 2>/dev/null | tail -1)
+            case "$self_name" in
+                /usr/lib/*|/System/*|@rpath/*|@executable_path/*|@loader_path/*) ;;
+                *)
+                    if [ -n "$self_name" ]; then
+                        install_name_tool -id "@loader_path/$(basename "$self_name")" "$f" 2>/dev/null || true
+                    fi
+                    ;;
+            esac
         fi
     done
 }
 
-# Fix PostgreSQL binaries
+# Fix PostgreSQL
 if [ -d "$PG_DIR/bin" ]; then
-    for bin in "$PG_DIR/bin/"*; do
-        fix_dylib_refs "$bin" "$PG_DIR/lib"
-    done
+    fix_all_dylibs "$PG_DIR/lib" "$PG_DIR/bin"
+fi
+
+# Fix Redis
+if [ -d "$REDIS_DIR/bin" ]; then
+    mkdir -p "$REDIS_DIR/lib"
+    fix_all_dylibs "$REDIS_DIR/lib" "$REDIS_DIR/bin"
+fi
+
+# Fix ffmpeg
+FFMPEG_BUNDLE="$RESOURCES_DIR/ffmpeg"
+if [ -d "$FFMPEG_BUNDLE/bin" ]; then
+    fix_all_dylibs "$FFMPEG_BUNDLE/lib" "$FFMPEG_BUNDLE/bin"
 fi
 
 # ── Re-sign all binaries (install_name_tool invalidates signatures) ──

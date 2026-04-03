@@ -140,6 +140,18 @@ impl SidecarManager {
         // macOS: prevent ObjC fork() crash in RQ worker child processes
         env.insert("OBJC_DISABLE_INITIALIZE_FORK_SAFETY".into(), "YES".into());
 
+        // Add bundled ffmpeg to PATH so pydub can find it
+        let ffmpeg_bin = self.resource_bin("ffmpeg/bin");
+        if ffmpeg_bin.exists() {
+            let current_path = std::env::var("PATH").unwrap_or_default();
+            env.insert("PATH".into(), format!("{}:{}", ffmpeg_bin.to_string_lossy(), current_path));
+            // Set DYLD_LIBRARY_PATH so ffmpeg can find its bundled dylibs
+            let ffmpeg_lib = self.resource_bin("ffmpeg/lib");
+            if ffmpeg_lib.exists() {
+                env.insert("DYLD_LIBRARY_PATH".into(), ffmpeg_lib.to_string_lossy().into());
+            }
+        }
+
         // macOS: don't auto-create a default localfiles provider — let the setup wizard handle it
         env.entry("MEDIASERVER_TYPE".to_string()).or_insert_with(|| "".to_string());
 

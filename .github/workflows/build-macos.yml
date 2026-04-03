@@ -84,7 +84,7 @@ jobs:
           cp -R macos/src-tauri/resources/python "$RESOURCES_DEST/"
           cp -R macos/src-tauri/resources/postgres "$RESOURCES_DEST/"
           cp -R macos/src-tauri/resources/redis "$RESOURCES_DEST/"
-          cp macos/src-tauri/resources/ffmpeg "$RESOURCES_DEST/"
+          cp -R macos/src-tauri/resources/ffmpeg "$RESOURCES_DEST/"
 
           # Bundle Python source code
           mkdir -p "$RESOURCES_DEST/audiomuse"
