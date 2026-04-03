@@ -3,7 +3,8 @@ name: Build macOS DMG
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*-macos'
+      - 'v*-rc*'
   workflow_dispatch:
 
 jobs:
