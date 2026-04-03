@@ -1,0 +1,149 @@
+name: Build macOS DMG
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-14  # Apple Silicon (M1)
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            macos/src-tauri/target
+          key: macos-rust-${{ hashFiles('macos/src-tauri/Cargo.lock') }}
+          restore-keys: macos-rust-
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli@^2 --locked || true
+
+      - name: Bundle service binaries
+        run: ./macos/scripts/bundle-services.sh
+
+      - name: Build Python environment
+        run: ./macos/scripts/build-python-env.sh
+
+      - name: Generate app icons
+        run: |
+          mkdir -p macos/src-tauri/icons
+          # Generate a simple placeholder icon (will be replaced with real icon later)
+          python3 -c "
+          import struct, zlib
+          w, h = 256, 256
+          pixels = []
+          for y in range(h):
+              pixels.append(0)
+              for x in range(w):
+                  pixels.extend([66, 133, 244, 255])
+          raw = bytes(pixels)
+          def chunk(ct, d):
+              c = ct + d
+              return struct.pack('>I', len(d)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
+          png = b'\x89PNG\r\n\x1a\n'
+          png += chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0))
+          png += chunk(b'IDAT', zlib.compress(raw))
+          png += chunk(b'IEND', b'')
+          with open('macos/src-tauri/icons/icon.png', 'wb') as f:
+              f.write(png)
+          import shutil
+          icns_data = b'icns'
+          icon_type = b'ic07'
+          png_data = open('macos/src-tauri/icons/icon.png', 'rb').read()
+          icon_entry = icon_type + struct.pack('>I', len(png_data) + 8) + png_data
+          total_size = 8 + len(icon_entry)
+          icns_header = b'icns' + struct.pack('>I', total_size)
+          with open('macos/src-tauri/icons/icon.icns', 'wb') as f:
+              f.write(icns_header + icon_entry)
+          "
+
+      - name: Build Tauri app
+        working-directory: macos
+        run: cargo tauri build
+
+      - name: Inject resources into app bundle
+        run: |
+          APP_BUNDLE="macos/src-tauri/target/release/bundle/macos/AudioMuse-AI.app"
+          RESOURCES_DEST="$APP_BUNDLE/Contents/Resources"
+          mkdir -p "$RESOURCES_DEST"
+
+          # Copy bundled services
+          cp -R macos/src-tauri/resources/python "$RESOURCES_DEST/"
+          cp -R macos/src-tauri/resources/postgres "$RESOURCES_DEST/"
+          cp -R macos/src-tauri/resources/redis "$RESOURCES_DEST/"
+          cp macos/src-tauri/resources/ffmpeg "$RESOURCES_DEST/"
+
+          # Bundle Python source code
+          mkdir -p "$RESOURCES_DEST/audiomuse"
+          rsync -a \
+            --exclude='macos/' \
+            --exclude='docs/' \
+            --exclude='screenshot/' \
+            --exclude='student_clap/' \
+            --exclude='tests/' \
+            --exclude='test/' \
+            --exclude='deployment/' \
+            --exclude='.git/' \
+            --exclude='__pycache__/' \
+            --exclude='*.pyc' \
+            --exclude='.env' \
+            --exclude='*.egg-info/' \
+            ./ "$RESOURCES_DEST/audiomuse/"
+
+          echo "Resources injected into app bundle"
+          du -sh "$RESOURCES_DEST"
+
+      - name: Sign app bundle
+        run: |
+          APP_BUNDLE="macos/src-tauri/target/release/bundle/macos/AudioMuse-AI.app"
+
+          # Sign all binaries and libraries inside the bundle
+          find "$APP_BUNDLE" -type f \( -perm +111 -o -name "*.dylib" -o -name "*.so" \) \
+            -exec codesign --force --sign - {} \; 2>/dev/null || true
+
+          # Sign the app bundle itself
+          codesign --force --deep --sign - "$APP_BUNDLE"
+
+          echo "App bundle signed (ad-hoc)"
+
+      - name: Create DMG
+        run: |
+          APP_BUNDLE="macos/src-tauri/target/release/bundle/macos/AudioMuse-AI.app"
+          DMG_PATH="AudioMuse-AI_$(git describe --tags --always)_arm64.dmg"
+
+          # Create DMG from the app bundle
+          hdiutil create -volname "AudioMuse-AI" \
+            -srcfolder "$APP_BUNDLE" \
+            -ov -format UDZO \
+            "$DMG_PATH"
+
+          echo "DMG created: $DMG_PATH"
+          ls -lh "$DMG_PATH"
+          echo "dmg_path=$DMG_PATH" >> $GITHUB_OUTPUT
+        id: dmg
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioMuse-AI-macOS-arm64
+          path: ${{ steps.dmg.outputs.dmg_path }}
+          retention-days: 30
+
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.dmg.outputs.dmg_path }}

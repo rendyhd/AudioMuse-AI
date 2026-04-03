@@ -47,6 +47,17 @@ else
     cp -R "$PG_PREFIX/lib/postgresql@15/"* "$PG_DIR/lib/" 2>/dev/null || \
         cp -R "$PG_PREFIX/lib/"*.dylib "$PG_DIR/lib/" 2>/dev/null || true
 
+    # Copy ICU libraries (required by PostgreSQL, not always pulled in automatically)
+    ICU_PREFIX="$(brew --prefix icu4c@78 2>/dev/null || brew --prefix icu4c 2>/dev/null || true)"
+    if [ -n "$ICU_PREFIX" ] && [ -d "$ICU_PREFIX/lib" ]; then
+        for lib in libicudata libicuuc libicui18n; do
+            for f in "$ICU_PREFIX/lib/${lib}"*.dylib; do
+                [ -f "$f" ] && cp "$f" "$PG_DIR/lib/" 2>/dev/null || true
+            done
+        done
+        echo "ICU libraries bundled from $ICU_PREFIX"
+    fi
+
     # Copy extension modules (pg_trgm, unaccent are in contrib, always included)
     if [ -d "$PG_PREFIX/share/postgresql@15/extension" ]; then
         mkdir -p "$PG_DIR/share/extension"
@@ -149,6 +160,14 @@ if [ -d "$PG_DIR/bin" ]; then
         fix_dylib_refs "$bin" "$PG_DIR/lib"
     done
 fi
+
+# ── Re-sign all binaries (install_name_tool invalidates signatures) ──
+
+echo ""
+echo ">>> Re-signing all binaries..."
+chmod -R u+rw "$RESOURCES_DIR"
+find "$RESOURCES_DIR" -type f \( -perm +111 -o -name "*.dylib" -o -name "*.so" \) -exec codesign --force --sign - {} \; 2>/dev/null || true
+echo "Re-signing complete."
 
 # ── Summary ───────────────────────────────────────────────────────────
 
