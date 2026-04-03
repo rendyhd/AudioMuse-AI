@@ -51,7 +51,7 @@ EMBY_TOKEN = os.environ.get("EMBY_TOKEN", "your_default_token")  # Replace with 
 # For Lyrion: Use folder paths like "/music/myfolder"  
 # For Jellyfin/Navidrome: Use library/folder names
 MUSIC_LIBRARIES = os.environ.get("MUSIC_LIBRARIES", "") 
-TEMP_DIR = "/app/temp_audio"  # Always use /app/temp_audio
+TEMP_DIR = os.environ.get("TEMP_DIR", "/app/temp_audio")
 HEADERS = {"X-Emby-Token": JELLYFIN_TOKEN}
 
 if MEDIASERVER_TYPE == "jellyfin":

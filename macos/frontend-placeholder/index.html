@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>AudioMuse-AI</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background: #1a1a2e;
+            color: #e0e0e0;
+        }
+        .loading {
+            text-align: center;
+        }
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #333;
+            border-top-color: #6c5ce7;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 16px;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        #status { margin-top: 8px; font-size: 14px; color: #888; }
+    </style>
+</head>
+<body>
+    <div class="loading">
+        <div class="spinner"></div>
+        <div>Starting AudioMuse-AI...</div>
+        <div id="status">Initializing services</div>
+    </div>
+    <script>
+        // Listen for Tauri events during startup
+        if (window.__TAURI__) {
+            window.__TAURI__.event.listen('first-run-setup', (event) => {
+                document.getElementById('status').textContent = 'Downloading ML models (first run)...';
+            });
+            window.__TAURI__.event.listen('model-download-progress', (event) => {
+                const d = event.payload;
+                if (d.status === 'complete') {
+                    document.getElementById('status').textContent = 'Models ready, starting server...';
+                } else {
+                    document.getElementById('status').textContent =
+                        `Downloading ${d.filename} (${d.current}/${d.total})...`;
+                }
+            });
+        }
+        // Redirect to Flask once it's ready
+        const checkFlask = setInterval(() => {
+            fetch('http://127.0.0.1:8000/')
+                .then(r => { if (r.ok || r.redirected) { clearInterval(checkFlask); window.location = 'http://127.0.0.1:8000/'; } })
+                .catch(() => {});
+        }, 1000);
+    </script>
+</body>
+</html>
