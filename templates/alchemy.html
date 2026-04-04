@@ -1156,27 +1156,40 @@
             }
             if (target.matches('.btn-rename-anchor')) {
                 const id = target.dataset.id;
-                const oldName = target.closest('tr')?.querySelector('td')?.textContent?.trim() || '';
-                const newName = window.prompt('Enter new anchor name:', oldName);
-                if (!newName || newName.trim() === '' || newName.trim() === oldName) {
-                    return;
-                }
-                try {
-                    const resp = await fetch(`/api/anchors/${id}`, {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ name: newName.trim() }),
-                    });
-                    const body = await resp.json();
-                    if (!resp.ok || body.error) {
-                        throw new Error(body.error || 'Failed to rename anchor');
+                const nameCell = target.closest('tr')?.querySelector('td');
+                const oldName = nameCell?.textContent?.trim() || '';
+                // Use inline editing instead of window.prompt() (blocked in WKWebView)
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.value = oldName;
+                input.style.cssText = 'width:100%;padding:4px;border-radius:4px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);';
+                nameCell.textContent = '';
+                nameCell.appendChild(input);
+                input.focus();
+                input.select();
+                const finishRename = async () => {
+                    const newName = input.value;
+                    if (!newName || newName.trim() === '' || newName.trim() === oldName) {
+                        nameCell.textContent = oldName;
+                        return;
                     }
-                    await refreshAnchors();
-                    showMessageBox('Renamed', `Anchor renamed to '${newName.trim()}'.`);
-                } catch (e) {
-                    console.error('rename anchor', e);
-                    showMessageBox('Error', String(e));
-                }
+                    try {
+                        const resp = await fetch(`/api/anchors/${id}`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ name: newName.trim() }),
+                        });
+                        const body = await resp.json();
+                        if (!resp.ok || body.error) throw new Error(body.error || 'Failed');
+                        await refreshAnchors();
+                        showMessageBox('Renamed', `Anchor renamed to '${newName.trim()}'.`);
+                    } catch (e) {
+                        console.error('rename anchor', e);
+                        showMessageBox('Error', String(e));
+                    }
+                };
+                input.addEventListener('keydown', (e) => { if (e.key === 'Enter') finishRename(); if (e.key === 'Escape') { nameCell.textContent = oldName; } });
+                input.addEventListener('blur', finishRename);
                 return;
             }
         });
