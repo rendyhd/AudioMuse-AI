@@ -64,6 +64,15 @@ else
         cp -R "$PG_PREFIX/share/postgresql@15/"* "$PG_DIR/share/"
     fi
 
+    # Copy PostgreSQL server modules ($libdir .so files - dict_snowball, pg_trgm, etc.)
+    PG_CELLAR="$(brew --cellar postgresql@15)"
+    PG_PKGLIB="$(find "$PG_CELLAR" -type d -name "postgresql" -path "*/lib/postgresql" | head -1)"
+    if [ -n "$PG_PKGLIB" ] && [ -d "$PG_PKGLIB" ]; then
+        mkdir -p "$PG_DIR/lib/postgresql"
+        cp "$PG_PKGLIB/"*.so "$PG_DIR/lib/postgresql/"
+        echo "PostgreSQL modules bundled: $(ls "$PG_DIR/lib/postgresql/"*.so | wc -l | tr -d ' ') .so files"
+    fi
+
     echo "PostgreSQL binaries bundled to $PG_DIR"
 fi
 
@@ -216,24 +225,31 @@ echo ""
 echo ">>> Patching PostgreSQL share directory path in binaries..."
 chmod -R u+rw "$RESOURCES_DIR"
 PG_PREFIX_SHARE="$(brew --prefix postgresql@15)/share/postgresql@15"
+PG_PREFIX_PKGLIB="$(brew --prefix postgresql@15)/lib/postgresql"
 if [ -d "$PG_DIR/bin" ] && [ -n "$PG_PREFIX_SHARE" ]; then
     python3 -c "
 import os, sys
 pg_dir = '$PG_DIR'
-old = b'$PG_PREFIX_SHARE'
-new = b'/tmp/.audiomuse_pg_share'
-if len(new) > len(old):
-    print(f'ERROR: new path ({len(new)}) longer than old ({len(old)})', file=sys.stderr)
-    sys.exit(1)
-padded = new + b'\x00' * (len(old) - len(new))
+patches = [
+    (b'$PG_PREFIX_SHARE', b'/tmp/.audiomuse_pg_share'),
+    (b'$PG_PREFIX_PKGLIB', b'/tmp/.audiomuse_pg_pkglib'),
+]
+for old, new in patches:
+    if len(new) > len(old):
+        print(f'ERROR: new path ({len(new)}) longer than old ({len(old)})', file=sys.stderr)
+        sys.exit(1)
 for name in ['postgres', 'initdb', 'pg_ctl', 'pg_isready', 'psql']:
     path = os.path.join(pg_dir, 'bin', name)
     if not os.path.exists(path): continue
     with open(path, 'rb') as f: data = f.read()
-    count = data.count(old)
-    data = data.replace(old, padded)
+    total = 0
+    for old, new in patches:
+        count = data.count(old)
+        padded = new + b'\x00' * (len(old) - len(new))
+        data = data.replace(old, padded)
+        total += count
     with open(path, 'wb') as f: f.write(data)
-    print(f'  {name}: patched {count} refs')
+    print(f'  {name}: patched {total} refs')
 "
 fi
 

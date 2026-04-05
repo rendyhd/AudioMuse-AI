@@ -189,16 +189,21 @@ impl SidecarManager {
 
     // ── PostgreSQL ───────────────────────────────────────────────────────
 
-    /// Create symlink so PostgreSQL can find its share directory.
-    /// The bundled postgres binaries have /tmp/.audiomuse_pg_share baked in
-    /// as the share directory path (patched from the Homebrew default).
-    fn ensure_pg_share_symlink(&self) {
-        let pg_share = self.resource_bin("postgres/share");
-        let symlink_path = std::path::PathBuf::from("/tmp/.audiomuse_pg_share");
-        // Remove stale symlink and recreate
-        let _ = std::fs::remove_file(&symlink_path);
-        if pg_share.exists() {
-            let _ = std::os::unix::fs::symlink(&pg_share, &symlink_path);
+    /// Create symlinks so PostgreSQL can find its share and lib directories.
+    /// The bundled postgres binaries have /tmp/.audiomuse_pg_* paths baked in
+    /// (patched from the Homebrew defaults in bundle-services.sh).
+    fn ensure_pg_symlinks(&self) {
+        let links = [
+            ("postgres/share", "/tmp/.audiomuse_pg_share"),
+            ("postgres/lib/postgresql", "/tmp/.audiomuse_pg_pkglib"),
+        ];
+        for (resource, symlink) in &links {
+            let target = self.resource_bin(resource);
+            let symlink_path = std::path::PathBuf::from(symlink);
+            let _ = std::fs::remove_file(&symlink_path);
+            if target.exists() {
+                let _ = std::os::unix::fs::symlink(&target, &symlink_path);
+            }
         }
     }
 
@@ -246,7 +251,7 @@ impl SidecarManager {
 
     /// Start the PostgreSQL server using pg_ctl (avoids "multithreaded" error).
     fn start_postgres(&mut self) -> Result<(), String> {
-        self.ensure_pg_share_symlink();
+        self.ensure_pg_symlinks();
         self.init_postgres()?;
 
         let pg_data = self.data_dir.join("postgres").join("data");
