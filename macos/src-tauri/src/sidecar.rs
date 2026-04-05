@@ -210,11 +210,13 @@ impl SidecarManager {
                 "audiomuse",
                 "--encoding=UTF8",
                 "--locale=C",
+                "--timezone=UTC",
                 "-L",
                 &pg_share.to_string_lossy(),
             ])
             .env("LC_ALL", "C")
             .env("LC_CTYPE", "C")
+            .env("PGSHAREDIR", pg_share.as_os_str())
             .output()
             .map_err(|e| format!("Failed to run initdb: {}", e))?;
 
@@ -246,6 +248,7 @@ impl SidecarManager {
             self.data_dir.join("logs").to_string_lossy(),
         );
 
+        let pg_share = self.resource_bin("postgres/share");
         let output = Command::new(&pg_ctl)
             .args([
                 "start",
@@ -259,6 +262,7 @@ impl SidecarManager {
             ])
             .env("LC_ALL", "C")
             .env("LC_CTYPE", "C")
+            .env("PGSHAREDIR", pg_share.as_os_str())
             .output()
             .map_err(|e| format!("Failed to start PostgreSQL via pg_ctl: {}", e))?;
 
