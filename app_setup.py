@@ -369,8 +369,25 @@ def _server_identity_changed(old_provider, new_config):
 
 
 def update_provider(provider_id, name=None, config_data=None, enabled=None, priority=None):
-    """Update an existing provider configuration."""
+    """Update an existing provider configuration.
+
+    If the server identity (URL/host) changed, purges all provider_track entries
+    for this provider since the old item_ids are no longer valid on the new server.
+    """
     db = get_db()
+
+    # If config is changing, check if server identity changed
+    if config_data is not None:
+        old_provider = get_provider_by_id(provider_id)
+        if old_provider and _server_identity_changed(old_provider, config_data):
+            with db.cursor() as cur:
+                cur.execute("DELETE FROM provider_track WHERE provider_id = %s", (provider_id,))
+                deleted = cur.rowcount
+            logger.info(
+                f"Purged {deleted} provider_track entries for provider {provider_id} "
+                f"({old_provider['provider_type']}) — server identity changed"
+            )
+
     updates = []
     values = []
 

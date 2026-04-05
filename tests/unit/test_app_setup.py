@@ -621,6 +621,77 @@ class TestServerIdentityChanged:
 
 
 # ---------------------------------------------------------------------------
+# Provider Reconfig Purge
+# ---------------------------------------------------------------------------
+
+class TestProviderReconfigPurge:
+    """Test that update_provider purges provider_track when server identity changes."""
+
+    @patch('app_setup.get_provider_by_id', return_value={
+        'id': 1, 'provider_type': 'navidrome', 'name': 'Navidrome',
+        'config': {'url': 'http://old-server:4533', 'password': 'pw'},
+    })
+    @patch('app_setup.get_db')
+    def test_url_change_purges_provider_track(self, mock_get_db, mock_get_by_id):
+        """Changing the server URL deletes all provider_track entries for that provider."""
+        mock_cur = MagicMock()
+        mock_cur.rowcount = 500
+        mock_db = MagicMock()
+        mock_db.cursor.return_value.__enter__ = Mock(return_value=mock_cur)
+        mock_db.cursor.return_value.__exit__ = Mock(return_value=False)
+        mock_get_db.return_value = mock_db
+
+        from app_setup import update_provider
+        update_provider(1, config_data={'url': 'http://new-server:4533', 'password': 'pw'})
+
+        # Verify DELETE was called for provider_track
+        delete_calls = [c for c in mock_cur.execute.call_args_list
+                        if 'DELETE FROM provider_track' in str(c)]
+        assert len(delete_calls) == 1
+        assert delete_calls[0][0][1] == (1,)
+
+    @patch('app_setup.get_provider_by_id', return_value={
+        'id': 1, 'provider_type': 'navidrome', 'name': 'Navidrome',
+        'config': {'url': 'http://server:4533', 'password': 'old-pw'},
+    })
+    @patch('app_setup.get_db')
+    def test_credential_change_does_not_purge(self, mock_get_db, mock_get_by_id):
+        """Changing only credentials does NOT delete provider_track entries."""
+        mock_cur = MagicMock()
+        mock_cur.rowcount = 1
+        mock_db = MagicMock()
+        mock_db.cursor.return_value.__enter__ = Mock(return_value=mock_cur)
+        mock_db.cursor.return_value.__exit__ = Mock(return_value=False)
+        mock_get_db.return_value = mock_db
+
+        from app_setup import update_provider
+        update_provider(1, config_data={'url': 'http://server:4533', 'password': 'new-pw'})
+
+        # Verify DELETE was NOT called for provider_track
+        delete_calls = [c for c in mock_cur.execute.call_args_list
+                        if 'DELETE FROM provider_track' in str(c)]
+        assert len(delete_calls) == 0
+
+    @patch('app_setup.get_provider_by_id', return_value=None)
+    @patch('app_setup.get_db')
+    def test_nonexistent_provider_no_purge(self, mock_get_db, mock_get_by_id):
+        """update_provider on nonexistent provider does not crash or purge."""
+        mock_cur = MagicMock()
+        mock_cur.rowcount = 1
+        mock_db = MagicMock()
+        mock_db.cursor.return_value.__enter__ = Mock(return_value=mock_cur)
+        mock_db.cursor.return_value.__exit__ = Mock(return_value=False)
+        mock_get_db.return_value = mock_db
+
+        from app_setup import update_provider
+        update_provider(999, config_data={'url': 'http://server:4533'})
+
+        delete_calls = [c for c in mock_cur.execute.call_args_list
+                        if 'DELETE FROM provider_track' in str(c)]
+        assert len(delete_calls) == 0
+
+
+# ---------------------------------------------------------------------------
 # Provider Test Endpoints
 # ---------------------------------------------------------------------------
 
