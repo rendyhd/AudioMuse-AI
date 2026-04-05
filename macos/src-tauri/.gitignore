@@ -2,6 +2,3 @@
 target/
 resources/
 gen/
-
-# Icons are generated during build
-icons/

@@ -38,39 +38,6 @@ jobs:
       - name: Build Python environment
         run: ./macos/scripts/build-python-env.sh
 
-      - name: Generate app icons
-        run: |
-          mkdir -p macos/src-tauri/icons
-          # Generate a simple placeholder icon (will be replaced with real icon later)
-          python3 -c "
-          import struct, zlib
-          w, h = 256, 256
-          pixels = []
-          for y in range(h):
-              pixels.append(0)
-              for x in range(w):
-                  pixels.extend([66, 133, 244, 255])
-          raw = bytes(pixels)
-          def chunk(ct, d):
-              c = ct + d
-              return struct.pack('>I', len(d)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
-          png = b'\x89PNG\r\n\x1a\n'
-          png += chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0))
-          png += chunk(b'IDAT', zlib.compress(raw))
-          png += chunk(b'IEND', b'')
-          with open('macos/src-tauri/icons/icon.png', 'wb') as f:
-              f.write(png)
-          import shutil
-          icns_data = b'icns'
-          icon_type = b'ic07'
-          png_data = open('macos/src-tauri/icons/icon.png', 'rb').read()
-          icon_entry = icon_type + struct.pack('>I', len(png_data) + 8) + png_data
-          total_size = 8 + len(icon_entry)
-          icns_header = b'icns' + struct.pack('>I', total_size)
-          with open('macos/src-tauri/icons/icon.icns', 'wb') as f:
-              f.write(icns_header + icon_entry)
-          "
-
       - name: Build Tauri app
         working-directory: macos
         run: cargo tauri build
