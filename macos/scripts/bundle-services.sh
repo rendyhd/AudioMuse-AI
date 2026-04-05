@@ -208,6 +208,34 @@ if [ -d "$PG_DIR/bin" ]; then
     fix_all_dylibs "$PG_DIR/lib" "$PG_DIR/bin"
 fi
 
+# Patch PostgreSQL compiled-in share directory path.
+# Homebrew bakes /opt/homebrew/opt/postgresql@15/share/postgresql@15 into binaries.
+# On machines without Homebrew this path doesn't exist, causing timezone lookup failures.
+# We patch it to /tmp/.audiomuse_pg_share which the app creates as a symlink at runtime.
+echo ""
+echo ">>> Patching PostgreSQL share directory path in binaries..."
+PG_PREFIX_SHARE="$(brew --prefix postgresql@15)/share/postgresql@15"
+if [ -d "$PG_DIR/bin" ] && [ -n "$PG_PREFIX_SHARE" ]; then
+    python3 -c "
+import os, sys
+pg_dir = '$PG_DIR'
+old = b'$PG_PREFIX_SHARE'
+new = b'/tmp/.audiomuse_pg_share'
+if len(new) > len(old):
+    print(f'ERROR: new path ({len(new)}) longer than old ({len(old)})', file=sys.stderr)
+    sys.exit(1)
+padded = new + b'\x00' * (len(old) - len(new))
+for name in ['postgres', 'initdb', 'pg_ctl', 'pg_isready', 'psql']:
+    path = os.path.join(pg_dir, 'bin', name)
+    if not os.path.exists(path): continue
+    with open(path, 'rb') as f: data = f.read()
+    count = data.count(old)
+    data = data.replace(old, padded)
+    with open(path, 'wb') as f: f.write(data)
+    print(f'  {name}: patched {count} refs')
+"
+fi
+
 # Fix Redis
 if [ -d "$REDIS_DIR/bin" ]; then
     mkdir -p "$REDIS_DIR/lib"
