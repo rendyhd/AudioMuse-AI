@@ -214,6 +214,7 @@ fi
 # We patch it to /tmp/.audiomuse_pg_share which the app creates as a symlink at runtime.
 echo ""
 echo ">>> Patching PostgreSQL share directory path in binaries..."
+chmod -R u+rw "$RESOURCES_DIR"
 PG_PREFIX_SHARE="$(brew --prefix postgresql@15)/share/postgresql@15"
 if [ -d "$PG_DIR/bin" ] && [ -n "$PG_PREFIX_SHARE" ]; then
     python3 -c "
