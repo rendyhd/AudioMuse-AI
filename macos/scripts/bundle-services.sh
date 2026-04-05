@@ -212,9 +212,33 @@ fix_all_dylibs() {
     done
 }
 
-# Fix PostgreSQL
+# Fix PostgreSQL binaries and dylibs
 if [ -d "$PG_DIR/bin" ]; then
     fix_all_dylibs "$PG_DIR/lib" "$PG_DIR/bin"
+fi
+
+# Fix PostgreSQL .so modules — they reference Homebrew dylibs too
+if [ -d "$PG_DIR/lib/postgresql" ]; then
+    echo "  Fixing .so module dylib references..."
+    for so in "$PG_DIR/lib/postgresql/"*.so; do
+        [ -f "$so" ] || continue
+        otool -L "$so" 2>/dev/null | tail -n +2 | awk '{print $1}' | while read -r dep; do
+            case "$dep" in
+                /usr/lib/*|/System/*|@rpath/*|@executable_path/*|@loader_path/*) continue ;;
+            esac
+            base=$(basename "$dep")
+            # Copy missing lib to PG_DIR/lib if needed
+            if [ ! -f "$PG_DIR/lib/$base" ] && [ -f "$dep" ]; then
+                cp "$dep" "$PG_DIR/lib/"
+                chmod u+rw "$PG_DIR/lib/$base"
+                echo "    Copied: $base (for .so module)"
+            fi
+            # .so modules are in lib/postgresql/, parent lib is in lib/
+            if [ -f "$PG_DIR/lib/$base" ]; then
+                install_name_tool -change "$dep" "@loader_path/../$base" "$so" 2>/dev/null || true
+            fi
+        done
+    done
 fi
 
 # Patch PostgreSQL compiled-in share directory path.
