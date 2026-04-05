@@ -559,6 +559,68 @@ class TestProviderUpdateEndpoint:
 
 
 # ---------------------------------------------------------------------------
+# _server_identity_changed() helper
+# ---------------------------------------------------------------------------
+
+class TestServerIdentityChanged:
+    """Test _server_identity_changed() helper logic."""
+
+    def test_url_change_detected(self):
+        """Different URL triggers identity change."""
+        from app_setup import _server_identity_changed
+        old = {'provider_type': 'navidrome', 'config': {'url': 'http://old:4533'}}
+        assert _server_identity_changed(old, {'url': 'http://new:4533'}) is True
+
+    def test_same_url_no_change(self):
+        """Same URL does not trigger identity change."""
+        from app_setup import _server_identity_changed
+        old = {'provider_type': 'navidrome', 'config': {'url': 'http://server:4533'}}
+        assert _server_identity_changed(old, {'url': 'http://server:4533'}) is False
+
+    def test_trailing_slash_ignored(self):
+        """Trailing slash difference does not trigger identity change."""
+        from app_setup import _server_identity_changed
+        old = {'provider_type': 'jellyfin', 'config': {'url': 'http://jf:8096/'}}
+        assert _server_identity_changed(old, {'url': 'http://jf:8096'}) is False
+
+    def test_credential_only_change_no_purge(self):
+        """Changing password/token does not trigger identity change."""
+        from app_setup import _server_identity_changed
+        old = {'provider_type': 'jellyfin', 'config': {'url': 'http://jf:8096', 'token': 'old-tok'}}
+        assert _server_identity_changed(old, {'url': 'http://jf:8096', 'token': 'new-tok'}) is False
+
+    def test_partial_update_no_url_no_change(self):
+        """Config update without URL field does not trigger identity change."""
+        from app_setup import _server_identity_changed
+        old = {'provider_type': 'navidrome', 'config': {'url': 'http://nd:4533', 'password': 'pw'}}
+        assert _server_identity_changed(old, {'password': 'new-pw'}) is False
+
+    def test_first_setup_empty_old_url_no_change(self):
+        """First-time config (old URL empty) does not trigger identity change."""
+        from app_setup import _server_identity_changed
+        old = {'provider_type': 'navidrome', 'config': {}}
+        assert _server_identity_changed(old, {'url': 'http://nd:4533'}) is False
+
+    def test_localfiles_music_directory_change(self):
+        """Changing music_directory for localfiles triggers identity change."""
+        from app_setup import _server_identity_changed
+        old = {'provider_type': 'localfiles', 'config': {'music_directory': '/music'}}
+        assert _server_identity_changed(old, {'music_directory': '/new-music'}) is True
+
+    def test_localfiles_same_directory_no_change(self):
+        """Same music_directory for localfiles does not trigger identity change."""
+        from app_setup import _server_identity_changed
+        old = {'provider_type': 'localfiles', 'config': {'music_directory': '/music'}}
+        assert _server_identity_changed(old, {'music_directory': '/music'}) is False
+
+    def test_unknown_provider_type_falls_back_to_url(self):
+        """Unknown provider type defaults to checking 'url' key."""
+        from app_setup import _server_identity_changed
+        old = {'provider_type': 'future_provider', 'config': {'url': 'http://old'}}
+        assert _server_identity_changed(old, {'url': 'http://new'}) is True
+
+
+# ---------------------------------------------------------------------------
 # Provider Test Endpoints
 # ---------------------------------------------------------------------------
 

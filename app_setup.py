@@ -341,6 +341,33 @@ def add_provider(provider_type, name, config_data, enabled=True, priority=0):
         return provider_id
 
 
+_SERVER_IDENTITY_KEYS = {
+    'jellyfin': ['url'],
+    'navidrome': ['url'],
+    'emby': ['url'],
+    'lyrion': ['url'],
+    'localfiles': ['music_directory'],
+}
+
+
+def _server_identity_changed(old_provider, new_config):
+    """Check if the server-identifying fields changed between old and new config.
+
+    Only triggers when both old and new values exist and differ.
+    A missing field (first-time setup, partial update) does NOT trigger a purge.
+    """
+    provider_type = old_provider['provider_type']
+    keys = _SERVER_IDENTITY_KEYS.get(provider_type, ['url'])
+    old_config = old_provider.get('config', {})
+
+    for key in keys:
+        old_val = (old_config.get(key) or '').rstrip('/')
+        new_val = (new_config.get(key) or '').rstrip('/')
+        if old_val and new_val and old_val != new_val:
+            return True
+    return False
+
+
 def update_provider(provider_id, name=None, config_data=None, enabled=None, priority=None):
     """Update an existing provider configuration."""
     db = get_db()
