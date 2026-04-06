@@ -216,7 +216,11 @@ def init_db():
             if not cur.fetchone()[0]:
                 logger.info("Adding 'updated_at' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN updated_at TIMESTAMP")
-                cur.execute("UPDATE score SET updated_at = t.updated_at FROM track t WHERE score.track_id = t.id")
+                # Backfill from track table only if score.track_id already exists
+                # (on pre-multiprovider DBs, track_id is added later by migration_track_id.py)
+                cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'track_id')")
+                if cur.fetchone()[0]:
+                    cur.execute("UPDATE score SET updated_at = t.updated_at FROM track t WHERE score.track_id = t.id")
                 cur.execute("ALTER TABLE score ALTER COLUMN updated_at SET DEFAULT CURRENT_TIMESTAMP")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_score_updated_at ON score(updated_at)")
             # Add 'duration_seconds' column if not exists
